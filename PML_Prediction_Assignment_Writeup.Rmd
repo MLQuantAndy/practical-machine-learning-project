@@ -1,0 +1,167 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Amandeep Singh"
+date: "October 24, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Objective
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. 
+
+## 2. Data Analysis and Processing
+
+```{r}
+library(randomForest)
+library(FactoMineR)
+library(factoextra)
+library(ggplot2)
+library(lattice)
+library(caret)
+library(corrplot)
+```
+
+#### Load Data
+```{r}
+training_data  <- read.csv("pml-training.csv")
+testing_data <- read.csv("pml-testing.csv")
+```
+The *training_data* will be used for building the model whereas *testing_data* will just be used to answer Quiz questions. 
+
+#### Explore and Clean Data
+```{r}
+dim(training_data)
+```
+The dataset is huge with 160 columns. Let us first try to eliminate all the columns and rows with NA. This will help reducing dimensionality. 
+
+```{r}
+training_data <- training_data[, colSums(is.na(training_data)) == 0]
+testing_data <- testing_data[, colSums(is.na(testing_data)) == 0]
+dim(training_data)
+```
+Further reduce the number of columns by removing all the columns related to timestamps, window. and also remove all the non-numerical columns.
+```{r}
+#remove timestamps and window related columns
+training_data <- training_data[, !grepl("^X|timestamp|window", names(training_data))]
+testing_data <- testing_data[, !grepl("^X|timestamp|window", names(testing_data))]
+training_classe <- training_data$classe
+testing_classe <- testing_data$classe
+#remove all non numeric fields
+training_data <- training_data[, sapply(training_data, is.numeric)]
+testing_data <- testing_data[, sapply(testing_data, is.numeric)]
+training_data$classe <- training_classe
+testing_data$classe <- testing_classe
+dim(training_data)
+```
+The dimentions are still high, lets perfrom PCA to findout the pricipal components. 
+
+```{r}
+res.pca <- PCA(training_data[,-ncol(training_data)], graph = FALSE)
+results <- as.data.frame(res.pca$eig)
+names(results) <- c("eigenvalue","percentage_of_variance","cumulative_percentage_of_variance" )
+ggplot(results, aes(x=1:52, y=percentage_of_variance)) + geom_bar(stat="identity")+theme_minimal()+
+  xlab("Pricinple components") + ylab("Percentage Of Variance Explained") +ggtitle("All Components and Percetage of variance explained by them")
+```
+
+From the plot above we see that about first 10 pricinple component explain 75% of the variations. Although we can work with just first 10 components. But for the sake of more accuracy I have chosen to work with first 36 components, which explain about 99% of variablity.
+
+```{r}
+pre_processed <- preProcess(training_data[,-ncol(training_data)], method="pca", thresh= 0.99)
+training_data <- predict(pre_processed, training_data[,-ncol(training_data)])
+training_data$classe <- training_classe
+
+# create training set with 70% of data
+set.seed(123)
+inTrain <- createDataPartition(y=training_data$classe, p=0.7, list=FALSE) 
+training_set <- training_data[inTrain,]
+testing_set <- training_data[-inTrain,]
+dim(training_set)
+dim(testing_set)
+```
+Now we have the data completely pre-processed with just 36 factors. We have also divided the final *training_data* into *training_set* and *testing_set* for our model developement process. 
+
+## 3. Predictive Modelling
+We will explore three different Machine Learning algorithms and choose the best model to answer quiz questions:
+1. Random Forests
+2. SVM (Support Vector Machines)
+3. Decision Trees
+
+#### 1. Random Forest
+```{r}
+library(e1071)
+set.seed(123)
+control_rf <- trainControl(method="cv", number=3, verboseIter=FALSE,allowParallel=TRUE)
+model_rf<-train(classe ~ ., data=training_set, trControl = control_rf , method="rf", prox=TRUE)
+model_rf$finalModel
+
+```
+
+##### Prediction on testing set
+```{r}
+prediction_rf <- predict(model_rf, testing_set, type="raw")
+conf_matrix_rf <- confusionMatrix(testing_set$classe,prediction_rf)
+# Confusion matrix
+conf_matrix_rf
+```
+Our Random Forests model showed accuracy of 97.8%, which is pretty good.
+
+#### 2. SVM (Support Vector Machines)
+```{r}
+set.seed(123)
+control_svm <- trainControl(method="cv", number=3, verboseIter=FALSE,allowParallel=TRUE)
+model_svm <- train(classe ~ ., data=training_set, trControl = control_svm , model="svm", prox=TRUE)
+model_svm$finalModel
+
+```
+
+##### Prediction on testing set
+```{r}
+prediction_svm <- predict(model_svm, testing_set, type="raw")
+conf_matrix_svm <- confusionMatrix(testing_set$classe,prediction_svm)
+# Confusion matrix
+conf_matrix_svm
+```
+our SVM model also showed accuracy of 97.8%, which is again pretty good.
+
+#### 3. Decision Trees
+```{r}
+library(rpart)
+set.seed(123)
+model_dt <- rpart(classe ~ ., data=training_set, method="class")
+model_dt
+```
+
+##### Prediction on testing set
+```{r}
+prediction_dt <- predict(model_dt, testing_set, type="class")
+conf_matrix_dt <- confusionMatrix(testing_set$classe,prediction_dt)
+# Confusion matrix
+conf_matrix_dt
+
+```
+We can see that Decision Tree algorithm perfom pretty bad on our dataset, with only 49.11% accuracy. 
+
+## 4. Cross Validation used
+The cross validation technique we used n our models is called k-fold cross validation - The k-fold cross validation method involves splitting the dataset into k-subsets. For each subset is held out while the model is trained on all other subsets. It is a robust method for estimating accuracy, and the size of k and tune the amount of bias in the estimate, with popular values set to 3, 5, 7 and 10.
+
+For Ramdom Forests and SVM models we used K = 3.
+
+## 4. Conclusion
+We saw that in our case Random Forests and SVM models performed with same level of accuracy. We can choose either of these models, but on my PC i found Random Forests took lesser time then SVM. Given the same level of accuracy, i am picking up Random Forests Model to answer Quiz questions.
+
+
+## 5. Answering Quiz Questions
+```{r}
+testing_data_processed <- predict(pre_processed, testing_data[,-ncol(testing_data)])
+predition_results <- predict(model_rf, testing_data_processed)
+predition_results
+```
+
+
+
